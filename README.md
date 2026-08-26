@@ -15,15 +15,81 @@ evento próprios do Crash.
 - `crash_point` só vem preenchido quando a rodada está `complete`
 - O servidor repete ticks idênticos; o coletor deduplica pelo `id` da rodada
 
-## Instalação no Windows/PowerShell
+## Requisitos
+
+- Python 3.10 ou superior
+- Git
+
+## Instalação
+
+Clone o repositório e entre na pasta criada. Os comandos abaixo funcionam
+independentemente de onde cada pessoa guarda seus projetos:
 
 ```powershell
-cd C:\Users\55929\Documents\CODEX-PROJECTS\blaze-auto
+git clone https://github.com/FabioWendel/blaze-auto.git
+cd blaze-auto
 python -m venv .venv
+```
+
+No Windows/PowerShell, ative o ambiente e instale o projeto:
+
+```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements-dev.txt
+python -m pip install --upgrade pip
 python -m pip install -e .
 ```
+
+No Linux/macOS:
+
+```bash
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+Todos os comandos deste README devem ser executados dentro da pasta clonada
+`blaze-auto`. Nenhum caminho absoluto do computador do autor é necessário.
+
+## Configuração obrigatória para apostas reais
+
+O monitor, o coletor histórico e o paper trading funcionam sem credenciais. Os
+comandos com `--live` exigem uma conta Blaze autenticada e um arquivo `.env`
+local.
+
+No Windows/PowerShell:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+No Linux/macOS:
+
+```bash
+cp .env.example .env
+```
+
+Preencha o novo arquivo `.env` com os dados da própria conta:
+
+```dotenv
+BLAZE_AUTHORIZATION=Bearer SEU_TOKEN
+BLAZE_WALLET_ID=ID_DA_SUA_CARTEIRA
+BLAZE_USERNAME=SEU_USUARIO
+BLAZE_RANK=SEU_RANK
+BLAZE_ROOM_ID=4
+
+# Opcionais, somente se existirem nos headers capturados:
+BLAZE_SESSION_ID=
+BLAZE_CLIENT_VERSION=
+```
+
+O valor de `BLAZE_AUTHORIZATION` pode ser copiado do header `Authorization` de
+uma requisição autenticada no DevTools do navegador. Cada usuário deve usar os
+dados da própria conta; os valores do autor não fazem parte do repositório.
+
+O arquivo `.env` é carregado automaticamente e já está no `.gitignore`. Nunca
+publique esse arquivo, tokens, cookies ou IDs de carteira. O arquivo
+`.env.example` é apenas um modelo sem credenciais reais.
 
 ## Uso
 
@@ -79,20 +145,9 @@ nunca devem ser gravados no Git.
 ## Executor de entrada e cashout
 
 Os endpoints de entrada e cashout estão implementados, mas ficam bloqueados sem
-`--live`. Antes de usar, escolha uma das formas abaixo para configurar as
-credenciais.
-
-Opção 1 — copie `.env.example` para `.env`, preencha os valores e mantenha o
-arquivo somente na sua máquina:
-
-```powershell
-Copy-Item .env.example .env
-notepad .env
-```
-
-O `.env` já está no `.gitignore` e é carregado automaticamente pelo executor.
-
-Opção 2 — configure apenas no terminal PowerShell atual:
+`--live`. Configure primeiro o `.env` conforme a seção de instalação. Como
+alternativa temporária, as variáveis também podem ser definidas apenas no
+terminal PowerShell atual:
 
 ```powershell
 $env:BLAZE_AUTHORIZATION = "Bearer SEU_TOKEN"
@@ -181,7 +236,10 @@ Paper e live são gravados separadamente em `data/auto_paper_signals.csv` e
 
 ## Testes
 
+Instale as dependências de desenvolvimento e execute:
+
 ```powershell
+python -m pip install -r requirements-dev.txt
 pytest
 ```
 
