@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blaze-crash-auto"
+version = "0.1.0"
+description = "Monitor e coletor do evento crash.tick da Blaze"
+requires-python = ">=3.10"
+dependencies = [
+    "websocket-client>=1.8,<2",
+    "requests>=2.32,<3",
+    "python-dotenv>=1.0,<2",
+]
+
+[project.scripts]
+blaze-crash = "blaze_auto.cli:main"
+blaze-crash-bet = "blaze_auto.bet_cli:main"
+blaze-crash-history = "blaze_auto.history_cli:main"
+blaze-crash-auto = "blaze_auto.auto_bot:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

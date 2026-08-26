@@ -1,0 +1,214 @@
+# Blaze Crash (`crash.tick`)
+
+Projeto separado para monitorar e coletar resultados do Blaze Crash. Ele usa o
+mesmo transporte Socket.IO/Engine.IO do projeto Double, mas assina a sala e o
+evento próprios do Crash.
+
+## O que foi confirmado no socket ao vivo
+
+- URL: `wss://api-gaming.blaze.bet.br/replication/?EIO=3&transport=websocket`
+- Sala principal: `crash_room_4`
+- Sala de apostas: `crash_room_4:bets`
+- Evento: `crash.tick`
+- Evento de apostas: `crash.tick-bets`
+- Estados: `waiting`, `graphing` e `complete`
+- `crash_point` só vem preenchido quando a rodada está `complete`
+- O servidor repete ticks idênticos; o coletor deduplica pelo `id` da rodada
+
+## Instalação no Windows/PowerShell
+
+```powershell
+cd C:\Users\55929\Documents\CODEX-PROJECTS\blaze-auto
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+python -m pip install -e .
+```
+
+## Uso
+
+Somente acompanhar os estados e resultados:
+
+```powershell
+python -m blaze_auto.cli
+```
+
+Acompanhar e gravar cada resultado uma única vez em CSV:
+
+```powershell
+python -m blaze_auto.cli --collect --output data/crash_rounds.csv
+```
+
+Teste curto, encerrando após uma rodada completa:
+
+```powershell
+python -m blaze_auto.cli --collect --max-rounds 1 --verbose
+```
+
+Mostrar o payload recebido a cada mudança de estado:
+
+```powershell
+python -m blaze_auto.cli --raw
+```
+
+Mostrar também os agregados da sala de apostas, sem exibir nomes ou IDs de
+jogadores:
+
+```powershell
+python -m blaze_auto.cli --show-bets
+```
+
+Se a Blaze atribuir outra sala à sessão, ambas podem ser informadas:
+
+```powershell
+python -m blaze_auto.cli --room crash_room_4 --bets-room crash_room_4:bets
+```
+
+## Diferença importante em relação ao Double
+
+No Double, o próprio tick traz cor e roll. No Crash, `crash.tick` informa o
+estado da rodada e, ao final, o multiplicador em `crash_point`. Este stream não
+mostrou um multiplicador crescente durante `graphing`; portanto ele é adequado
+para detectar a janela `waiting` e registrar o resultado, mas não basta sozinho
+para implementar cashout automático por multiplicador.
+
+O monitor não envia apostas. O executor descrito abaixo pode enviar transações
+reais somente quando `--live` é informado. Tokens, cookies e IDs de carteira
+nunca devem ser gravados no Git.
+
+## Executor de entrada e cashout
+
+Os endpoints de entrada e cashout estão implementados, mas ficam bloqueados sem
+`--live`. Antes de usar, escolha uma das formas abaixo para configurar as
+credenciais.
+
+Opção 1 — copie `.env.example` para `.env`, preencha os valores e mantenha o
+arquivo somente na sua máquina:
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+O `.env` já está no `.gitignore` e é carregado automaticamente pelo executor.
+
+Opção 2 — configure apenas no terminal PowerShell atual:
+
+```powershell
+$env:BLAZE_AUTHORIZATION = "Bearer SEU_TOKEN"
+$env:BLAZE_WALLET_ID = "SUA_CARTEIRA"
+$env:BLAZE_USERNAME = "SEU_USUARIO"
+$env:BLAZE_RANK = "SEU_RANK"
+$env:BLAZE_ROOM_ID = "4"
+```
+
+Entrada na próxima rodada em `waiting`, com retirada manual:
+
+```powershell
+python -m blaze_auto.bet_cli --live enter --amount 0.10
+```
+
+Entrada com retirada automática em `5.00x`:
+
+```powershell
+python -m blaze_auto.bet_cli --live enter --amount 0.10 --auto-cashout-at 5.00
+```
+
+Cashout manual de uma entrada aberta:
+
+```powershell
+python -m blaze_auto.bet_cli --live cashout
+```
+
+O executor não repete automaticamente um POST que falhou, porque uma repetição
+após perda da resposta pode criar uma segunda aposta. Confira a interface da
+Blaze antes de tentar novamente.
+
+## Bot automático por sequência
+
+O bot acompanha `crash.tick`, classifica cada resultado como `B` (`<2x`), `M`
+(`2x–4,99x`) ou `A` (`>=5x`) e arma uma entrada para a próxima rodada `waiting`
+quando encontra o padrão configurado. O padrão inicial é `MABBM`, com retirada
+automática em `5x`.
+
+### Rodar somente uma entrada
+
+Este é o modo padrão e o mais seguro para testar. O bot permanece aberto
+esperando o padrão `MABBM`, faz uma entrada, aguarda o resultado dessa rodada e
+encerra. Se o padrão demorar, ele continuará aguardando.
+
+Uma entrada em paper trading, sem dinheiro real:
+
+```powershell
+python -m blaze_auto.auto_bot
+```
+
+Uma entrada real de R$ 0,10 com retirada automática em `5x`:
+
+```powershell
+python -m blaze_auto.auto_bot --live --stake 0.10 --auto-cashout-at 5.00
+```
+
+### Rodar continuamente
+
+O valor `--max-session-entries 0` significa que não existe limite de entradas
+por execução. Depois de resolver uma entrada, o bot volta a procurar `MABBM` e
+continua até receber `Ctrl+C` ou atingir uma proteção diária.
+
+Paper trading contínuo:
+
+```powershell
+python -m blaze_auto.auto_bot --max-session-entries 0
+```
+
+Execução real contínua:
+
+```powershell
+python -m blaze_auto.auto_bot --live --stake 0.10 --auto-cashout-at 5.00 --max-session-entries 0
+```
+
+Use o modo real somente depois da validação em paper e com as variáveis do
+`.env` configuradas.
+
+### Proteções que continuam ativas
+
+Mesmo no modo contínuo, os padrões são: stop-loss diário de R$ 5, stop-gain
+diário de R$ 5, máximo de 20 entradas diárias e apenas uma entrada por rodada.
+O bot também impede uma segunda entrada na mesma rodada após reinício.
+
+Paper e live são gravados separadamente em `data/auto_paper_signals.csv` e
+`data/auto_live_signals.csv`.
+
+## Testes
+
+```powershell
+pytest
+```
+
+## Baixar um mês de histórico
+
+A API histórica é paginada em blocos de 100 rodadas. O coletor percorre as
+páginas, tenta novamente falhas transitórias, elimina IDs duplicados, aplica o
+intervalo de data localmente e grava em ordem cronológica:
+
+```powershell
+python -m blaze_auto.history_cli --days 30
+```
+
+Por padrão o coletor faz pausas entre páginas e recua automaticamente quando a
+API responde `429 Too Many Requests`. Evite aumentar `--workers`, pois a API
+aplica limite de requisições.
+
+Saída padrão:
+
+- `data/crash_history_30d.csv`
+- `data/crash_history_30d.csv.meta.json`
+
+Para escolher datas exatas:
+
+```powershell
+python -m blaze_auto.history_cli `
+  --start 2026-07-27T21:49:10.310Z `
+  --end 2026-08-26T21:49:10.310Z `
+  --output data/crash_2026-07-27_a_2026-08-26.csv
+```
