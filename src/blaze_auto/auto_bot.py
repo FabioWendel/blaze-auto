@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from .api_client import BlazeApiError, BlazeUncertainOutcome, CrashApiClient
+from .api_client import BlazeApiError, BlazeEntryNotSent, BlazeUncertainOutcome, CrashApiClient
 from .bet_cli import account_from_environment
 from .crash_watcher import DEFAULT_CRASH_ROOM, DEFAULT_WS_URL, BlazeCrashWatcher
 from .history import fetch_history_page, normalize_record
@@ -35,7 +36,71 @@ def bootstrap_rounds(room_id: int, timeout: float) -> list[dict[str, Any]]:
     return sorted(normalized, key=lambda row: row["created_at"])
 
 
+MAX_TICK_AGE_SECONDS = 2.0
+ENTRY_RETRY_DELAY_SECONDS = 0.5
+
+
+def fresh_tick(watcher: BlazeCrashWatcher, snapshot: Any) -> bool:
+    return (
+        not watcher.last_error()
+        and bool(snapshot.round_id)
+        and 0 <= time.time() - snapshot.received_at <= MAX_TICK_AGE_SECONDS
+    )
+
+
+def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
+                    row: dict[str, Any], window_seconds: float, max_attempts: int) -> bool:
+    """Repete somente falha comprovadamente anterior ao envio, na mesma rodada."""
+    deadline = time.monotonic() + window_seconds
+    signal_id = row["signal_id"]
+
+    def window_open() -> bool:
+        snapshot = watcher.snapshot()
+        return (
+            time.monotonic() < deadline
+            and snapshot.round_id == row["entry_round_id"]
+            and snapshot.status == "waiting"
+            and fresh_tick(watcher, snapshot)
+        )
+
+    for attempt in range(1, max_attempts + 1):
+        if not window_open():
+            break
+        update_signal(path, signal_id, {"status": "sending", "message": f"reservado antes do POST; tentativa {attempt}"})
+        # A gravação em disco também pode consumir o restante da janela.
+        if not window_open():
+            break
+        try:
+            api.enter(row["stake"], row["entry_round_id"], row["auto_cashout_at"],
+                      timeout=deadline - time.monotonic())
+        except BlazeUncertainOutcome:
+            raise
+        except BlazeEntryNotSent as exc:
+            update_signal(path, signal_id, {"status": "rejected", "message": f"tentativa {attempt}: {exc}"})
+            if attempt == max_attempts:
+                break
+            print(f"ENTRADA NÃO ENVIADA | tentativa={attempt} | verificando janela da mesma rodada", flush=True)
+            retry_at = time.monotonic() + ENTRY_RETRY_DELAY_SECONDS
+            while time.monotonic() < retry_at and window_open():
+                time.sleep(min(0.05, max(0, retry_at - time.monotonic())))
+        except BlazeApiError as exc:
+            update_signal(path, signal_id, {"status": "rejected", "message": str(exc)})
+            print(f"ENTRADA RECUSADA | {exc} | aguardando novo padrão", flush=True)
+            return False
+        else:
+            update_signal(path, signal_id, {"status": "entered", "message": f"API aceitou entrada; tentativa {attempt}"})
+            row["status"] = "entered"
+            return True
+    update_signal(path, signal_id, {"status": "rejected", "message": "sem entrada: janela indisponível ou limite de tentativas atingido"})
+    print("ENTRADA DESCARTADA | janela indisponível ou tentativas esgotadas | aguardando novo padrão", flush=True)
+    return False
+
+
 def run(args: argparse.Namespace) -> int:
+    if (not math.isfinite(args.entry_window_seconds) or args.entry_window_seconds <= 0
+            or args.max_entry_attempts < 1):
+        print("ERRO: janela e máximo de tentativas devem ser positivos e finitos.")
+        return 1
     pattern = args.pattern.strip().upper()
     if not pattern or any(char not in {"B", "M", "A"} for char in pattern):
         print("ERRO: --pattern aceita somente B, M e A.")
@@ -147,6 +212,8 @@ def run(args: argparse.Namespace) -> int:
                     pending = None
 
                 if round_id not in seen_ids:
+                    # Um gatilho vale somente para a rodada imediatamente seguinte.
+                    armed_trigger_id = ""
                     seen_ids.add(round_id)
                     points.append(float(result["crash_point"]))
                     points = points[-200:]
@@ -155,6 +222,14 @@ def run(args: argparse.Namespace) -> int:
                         print(f"PADRÃO {pattern} DETECTADO | gatilho={round_id}", flush=True)
 
             snapshot = watcher.snapshot()
+            if armed_trigger_id and (
+                watcher.last_error()
+                or (snapshot.round_id and not fresh_tick(watcher, snapshot))
+                or (snapshot.round_id and snapshot.round_id != armed_trigger_id
+                    and snapshot.status != "waiting")
+            ):
+                print("SINAL DESCARTADO | janela fechada ou socket sem dados recentes | aguardando novo padrão", flush=True)
+                armed_trigger_id = ""
             if (
                 armed_trigger_id
                 and not pending
@@ -162,6 +237,7 @@ def run(args: argparse.Namespace) -> int:
                 and snapshot.round_id
                 and snapshot.round_id != armed_trigger_id
                 and snapshot.round_id not in entered_ids
+                and fresh_tick(watcher, snapshot)
             ):
                 risk = risk_status(
                     signals_path,
@@ -194,9 +270,10 @@ def run(args: argparse.Namespace) -> int:
                 if args.live:
                     try:
                         assert api is not None
-                        api.enter(str(stake), snapshot.round_id, str(cashout))
-                        update_signal(signals_path, signal_id, {"status": "entered", "message": "API aceitou entrada"})
-                        row["status"] = "entered"
+                        if not enter_in_window(api, watcher, signals_path, row,
+                                               args.entry_window_seconds, args.max_entry_attempts):
+                            armed_trigger_id = ""
+                            continue
                     except BlazeUncertainOutcome as exc:
                         update_signal(signals_path, signal_id, {"status": "unknown", "message": str(exc)})
                         print(
@@ -205,11 +282,6 @@ def run(args: argparse.Namespace) -> int:
                             flush=True,
                         )
                         return 3
-                    except BlazeApiError as exc:
-                        update_signal(signals_path, signal_id, {"status": "rejected", "message": str(exc)})
-                        print(f"ENTRADA FALHOU | {exc}", flush=True)
-                        armed_trigger_id = ""
-                        continue
                 pending = row
                 armed_trigger_id = ""
                 session_entries += 1
@@ -251,6 +323,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--room", default=DEFAULT_CRASH_ROOM)
     parser.add_argument("--ws-url", default=DEFAULT_WS_URL)
     parser.add_argument("--http-timeout", type=float, default=20.0)
+    parser.add_argument("--entry-window-seconds", type=float, default=3.0,
+                        help="teto local para tentativas; sempre exige waiting recente da mesma rodada")
+    parser.add_argument("--max-entry-attempts", type=int, default=3,
+                        help="inclui a primeira tentativa; repete somente ConnectTimeout")
     parser.add_argument("--reconnect-seconds", type=float, default=3.0)
     parser.add_argument("--interval", type=float, default=0.05)
     parser.add_argument("--verbose", action="store_true")

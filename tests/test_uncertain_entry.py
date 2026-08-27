@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
+import time
 
 import pytest
 
@@ -41,7 +42,7 @@ def test_reset_stops_loop_and_persists_unknown(tmp_path, monkeypatch):
     class Api:
         def __init__(self, *args, **kwargs):
             pass
-        def enter(self, *args):
+        def enter(self, *args, **kwargs):
             # Reservation must already exist before the request leaves.
             assert read_signals(path)[0]["status"] == "sending"
             calls.append(args)
@@ -57,7 +58,9 @@ def test_reset_stops_loop_and_persists_unknown(tmp_path, monkeypatch):
         def pop_completed_rounds(self):
             return []
         def snapshot(self):
-            return SimpleNamespace(status="waiting", round_id="next-round")
+            return SimpleNamespace(status="waiting", round_id="next-round", received_at=time.time())
+        def last_error(self):
+            return ""
     monkeypatch.setattr(auto_bot, "CrashApiClient", Api)
     monkeypatch.setattr(auto_bot, "BlazeCrashWatcher", Watcher)
     args = auto_bot.build_parser().parse_args(["--live", "--signals", str(path), "--max-session-entries", "0"])

@@ -20,6 +20,10 @@ class BlazeUncertainOutcome(BlazeApiError):
     """O POST pode ter sido processado; exige conferência, nunca reenvio."""
 
 
+class BlazeEntryNotSent(BlazeApiError):
+    """Falha ao estabelecer conexão: o pedido não chegou a ser enviado."""
+
+
 @dataclass(frozen=True)
 class CrashAccount:
     authorization: str
@@ -53,6 +57,8 @@ class CrashApiClient:
         amount: str | Decimal,
         client_round_id: str,
         auto_cashout_at: str | Decimal | None = None,
+        *,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         amount_text = decimal_text(amount, "amount", minimum=Decimal("0.01"))
         auto_cashout_text = None
@@ -74,7 +80,7 @@ class CrashApiClient:
             "client_round_id": client_round_id,
             "wallet_id": self.account.wallet_id,
         }
-        return self._post(ENTER_URL, payload)
+        return self._post(ENTER_URL, payload, timeout=timeout)
 
     def cashout(self) -> dict[str, Any]:
         payload = {
@@ -83,7 +89,7 @@ class CrashApiClient:
         }
         return self._post(CASHOUT_URL, payload)
 
-    def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(self, url: str, payload: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
         try:
             # Uma sessão por transação: não reutiliza conexões ociosas entre
             # sinais. Não instala adaptador de retry e não segue redirects.
@@ -92,7 +98,7 @@ class CrashApiClient:
                     url,
                     json=payload,
                     headers=self._headers(),
-                    timeout=self.timeout,
+                    timeout=self.timeout if timeout is None else min(self.timeout, timeout),
                     allow_redirects=False,
                 )
                 status = response.status_code
@@ -107,6 +113,10 @@ class CrashApiClient:
                 if not isinstance(body, dict) or not body:
                     raise BlazeUncertainOutcome("Resposta inesperada; confira a aposta na Blaze")
                 return body
+        except requests.ConnectTimeout as exc:
+            # Requests documenta ConnectTimeout como seguro para repetir.
+            # Não inclui ReadTimeout, Timeout genérico nem ConnectionError.
+            raise BlazeEntryNotSent("ConnectTimeout: pedido não enviado") from exc
         except requests.RequestException as exc:
             # Não copia headers, corpos de resposta ou URLs para o ledger.
             raise BlazeUncertainOutcome(

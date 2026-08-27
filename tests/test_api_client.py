@@ -1,7 +1,7 @@
 import pytest
 import requests
 
-from blaze_auto.api_client import CASHOUT_URL, ENTER_URL, BlazeApiError, BlazeUncertainOutcome, CrashAccount, CrashApiClient
+from blaze_auto.api_client import CASHOUT_URL, ENTER_URL, BlazeApiError, BlazeEntryNotSent, BlazeUncertainOutcome, CrashAccount, CrashApiClient
 
 
 class FakeResponse:
@@ -82,7 +82,7 @@ def test_new_session_for_each_transaction():
     assert all(session.closed and len(session.calls) == 1 for session in sessions)
 
 
-@pytest.mark.parametrize("error", [requests.ConnectionError, requests.Timeout])
+@pytest.mark.parametrize("error", [requests.ConnectionError, requests.Timeout, requests.ReadTimeout])
 def test_network_error_is_uncertain_and_never_retried(error):
     class BrokenSession(FakeSession):
         def post(self, url, **kwargs):
@@ -94,6 +94,21 @@ def test_network_error_is_uncertain_and_never_retried(error):
         client.enter("1", "a", "5")
     assert "sensitive" not in str(raised.value)
     assert len(session.calls) == 1
+    assert session.closed
+
+
+def test_connect_timeout_is_not_sent_and_client_itself_never_retries():
+    class BrokenSession(FakeSession):
+        def post(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            raise requests.ConnectTimeout("sensitive")
+    session = BrokenSession()
+    client = CrashApiClient(CrashAccount("secret", 123, "user", "gold"), session_factory=lambda: session)
+    with pytest.raises(BlazeEntryNotSent) as raised:
+        client.enter("1", "a", "5", timeout=0.25)
+    assert "sensitive" not in str(raised.value)
+    assert len(session.calls) == 1
+    assert session.calls[0][1]["timeout"] == 0.25
     assert session.closed
 
 

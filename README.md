@@ -183,7 +183,7 @@ Cada transação abre e fecha uma sessão HTTP própria, sem reutilizar conexõe
 ociosas e sem seguir redirecionamentos. Isso reduz o risco de reutilização de
 uma conexão antiga; não garante que erros de rede deixem de ocorrer.
 
-### Se ocorrer reset de conexão, timeout ou resposta incerta
+### Se ocorrer reset de conexão, timeout de resposta ou resposta incerta
 
 O bot automático grava `unknown` no CSV e **encerra com código 3**, sem repetir
 o POST. O bloqueio continua depois de reiniciar ou virar o dia. Registros
@@ -218,6 +218,32 @@ O bot acompanha `crash.tick`, classifica cada resultado como `B` (`<2x`), `M`
 (`2x–4,99x`) ou `A` (`>=5x`) e arma uma entrada para a próxima rodada `waiting`
 quando encontra o padrão configurado. O padrão inicial é `MABBM`, com retirada
 automática em `5x`.
+
+### Falha na entrada e janela de tempo
+
+Se a API recusar a entrada, o bot descarta o sinal e espera **um novo padrão**.
+O sinal antigo não é reaproveitado em outra rodada. Se a rodada já estiver em
+`graphing`/`complete`, ou o socket estiver desconectado/sem tick recente, não entra.
+
+O bot só repete uma falha `ConnectTimeout` (conexão não estabelecida, pedido
+não enviado), sempre na **mesma rodada ainda em `waiting`**, com tick recebido
+há no máximo 2 segundos e sem erro no socket. São até 3 tentativas no total,
+separadas por pelo menos 0,5 segundo, com teto local de 3 segundos desde o início
+da tentativa. A janela fecha assim que qualquer condição deixa de valer.
+Recusas HTTP não são repetidas automaticamente.
+
+Esse teto local não é uma contagem regressiva oficial da Blaze: o socket fornecido
+não informa o instante exato de fechamento. Uma requisição em andamento ainda
+pode terminar depois da janela; se for aceita, o bot acompanha essa entrada.
+
+Para permitir somente uma tentativa, acrescente `--max-entry-attempts 1` ao
+comando do bot. O teto local é configurável com `--entry-window-seconds 3`.
+Essas opções valem para `blaze_auto.auto_bot`, não para o executor manual.
+
+**Reset 10054, timeout de leitura ou resposta perdida não comprovam falha da
+aposta.** Nesses casos, o bot continua pausando para conferência conforme a seção
+anterior, mesmo se ainda houver tempo: repetir ou seguir poderia duplicar apostas
+ou ignorar dinheiro já comprometido. Nenhuma repetição aumenta a stake.
 
 ### Rodar somente uma entrada
 
