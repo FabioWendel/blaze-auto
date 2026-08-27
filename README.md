@@ -179,6 +179,39 @@ O executor não repete automaticamente um POST que falhou, porque uma repetiçã
 após perda da resposta pode criar uma segunda aposta. Confira a interface da
 Blaze antes de tentar novamente.
 
+Cada transação abre e fecha uma sessão HTTP própria, sem reutilizar conexões
+ociosas e sem seguir redirecionamentos. Isso reduz o risco de reutilização de
+uma conexão antiga; não garante que erros de rede deixem de ocorrer.
+
+### Se ocorrer reset de conexão, timeout ou resposta incerta
+
+O bot automático grava `unknown` no CSV e **encerra com código 3**, sem repetir
+o POST. O bloqueio continua depois de reiniciar ou virar o dia. Registros
+`sending` interrompidos e `error` de versões anteriores também exigem
+conferência. Um resultado público da rodada não comprova que a sua aposta foi
+aceita, por isso não libera esse bloqueio automaticamente.
+
+Confira o histórico de apostas e o saldo na sua conta. Se confirmar que a
+tentativa não foi registrada, use o ID da **rodada de entrada** mostrado no log
+(não o ID da aposta nem o gatilho do padrão):
+
+```powershell
+python -m blaze_auto.reconcile --round-id ID_DA_RODADA --outcome not-placed --confirmed
+```
+
+Se a aposta foi registrada e já foi liquidada, informe o resultado e o lucro
+líquido efetivamente conferidos na conta. Exemplo de perda de R$ 1:
+
+```powershell
+python -m blaze_auto.reconcile --round-id ID_DA_RODADA --outcome loss --profit=-1.00 --confirmed
+```
+
+Para uma vitória, use `--outcome win --profit VALOR_LIQUIDO`. Se você usa outro
+CSV, passe o mesmo `--signals CAMINHO` ao comando de conferência. O comando não
+envia apostas, mantém o registro e preserva a proteção contra duplicar a rodada.
+Não apague o CSV nem use outro arquivo para contornar uma entrada incerta.
+Depois da conferência, inicie o bot novamente com o comando desejado.
+
 ## Bot automático por sequência
 
 O bot acompanha `crash.tick`, classifica cada resultado como `B` (`<2x`), `M`

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -14,6 +14,10 @@ CASHOUT_URL = f"{API_BASE_URL}/cashout"
 
 class BlazeApiError(RuntimeError):
     pass
+
+
+class BlazeUncertainOutcome(BlazeApiError):
+    """O POST pode ter sido processado; exige conferência, nunca reenvio."""
 
 
 @dataclass(frozen=True)
@@ -38,11 +42,11 @@ class CrashApiClient:
         self,
         account: CrashAccount,
         timeout: float = 15.0,
-        session: requests.Session | None = None,
+        session_factory: Callable[[], requests.Session] | None = None,
     ) -> None:
         self.account = account
         self.timeout = timeout
-        self.session = session or requests.Session()
+        self._session_factory = session_factory or requests.Session
 
     def enter(
         self,
@@ -81,23 +85,33 @@ class CrashApiClient:
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
-            response = self.session.post(
-                url,
-                json=payload,
-                headers=self._headers(),
-                timeout=self.timeout,
-            )
+            # Uma sessão por transação: não reutiliza conexões ociosas entre
+            # sinais. Não instala adaptador de retry e não segue redirects.
+            with self._session_factory() as session:
+                response = session.post(
+                    url,
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+                status = response.status_code
+                if status >= 500 or status == 408 or 300 <= status < 400:
+                    raise BlazeUncertainOutcome(f"HTTP {status}: aceitação incerta; não repita o POST")
+                if not 200 <= status < 300:
+                    raise BlazeApiError(f"HTTP {status}: requisição recusada")
+                try:
+                    body = response.json()
+                except ValueError:
+                    raise BlazeUncertainOutcome("Resposta sem JSON válido; confira a aposta na Blaze") from None
+                if not isinstance(body, dict) or not body:
+                    raise BlazeUncertainOutcome("Resposta inesperada; confira a aposta na Blaze")
+                return body
         except requests.RequestException as exc:
-            raise BlazeApiError(f"falha de conexão: {exc}") from exc
-
-        try:
-            body = response.json()
-        except ValueError:
-            body = {"raw": response.text}
-        if not response.ok:
-            message = body.get("message") if isinstance(body, dict) else None
-            raise BlazeApiError(f"HTTP {response.status_code}: {message or body}")
-        return body if isinstance(body, dict) else {"data": body}
+            # Não copia headers, corpos de resposta ou URLs para o ledger.
+            raise BlazeUncertainOutcome(
+                f"{type(exc).__name__}: resposta não confirmada; confira a Blaze antes de continuar"
+            ) from exc
 
     def _headers(self) -> dict[str, str]:
         authorization = self.account.authorization.strip()

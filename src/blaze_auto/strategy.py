@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -75,6 +76,8 @@ def append_signal(path: Path, row: dict[str, Any]) -> None:
         if needs_header:
             writer.writeheader()
         writer.writerow({field: row.get(field, "") for field in SIGNAL_FIELDS})
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def update_signal(path: Path, signal_id: str, updates: dict[str, Any]) -> None:
@@ -92,12 +95,22 @@ def update_signal(path: Path, signal_id: str, updates: dict[str, Any]) -> None:
         writer = csv.DictWriter(stream, fieldnames=SIGNAL_FIELDS)
         writer.writeheader()
         writer.writerows([{field: row.get(field, "") for field in SIGNAL_FIELDS} for row in rows])
+        stream.flush()
+        os.fsync(stream.fileno())
     temporary.replace(path)
 
 
 def pending_signal(path: Path) -> dict[str, str] | None:
     for row in reversed(read_signals(path)):
-        if row.get("status") in {"sending", "entered", "paper_entered"}:
+        if row.get("status") in {"entered", "paper_entered"}:
+            return row
+    return None
+
+
+def uncertain_signal(path: Path) -> dict[str, str] | None:
+    """Inclui errors legados: a versão anterior não distinguia rejeição de reset."""
+    for row in read_signals(path):
+        if row.get("mode") != "paper" and row.get("status") in {"sending", "unknown", "error"}:
             return row
     return None
 
@@ -116,7 +129,10 @@ def risk_status(
     day = now.astimezone(timezone.utc).date().isoformat()
     rows = [row for row in read_signals(path) if (row.get("entry_time") or "").startswith(day)]
     profit = sum((Decimal(row["profit"]) for row in rows if row.get("profit")), Decimal("0"))
-    entries = len([row for row in rows if row.get("status") != "error"])
+    entries = len([row for row in rows if row.get("status") not in {"rejected", "not_placed"}])
+    uncertain = uncertain_signal(path)
+    if uncertain:
+        return RiskStatus(False, f"entrada incerta na rodada {uncertain['entry_round_id']}", profit, entries)
     if daily_stop_loss and profit <= -abs(daily_stop_loss):
         return RiskStatus(False, f"stop-loss diário atingido ({profit})", profit, entries)
     if daily_take_profit and profit >= abs(daily_take_profit):

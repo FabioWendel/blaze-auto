@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from .api_client import BlazeApiError, CrashApiClient
+from .api_client import BlazeApiError, BlazeUncertainOutcome, CrashApiClient
 from .bet_cli import account_from_environment
 from .crash_watcher import DEFAULT_CRASH_ROOM, DEFAULT_WS_URL, BlazeCrashWatcher
 from .history import fetch_history_page, normalize_record
@@ -19,6 +19,7 @@ from .strategy import (
     matches_pattern,
     pending_signal,
     risk_status,
+    uncertain_signal,
     update_signal,
 )
 
@@ -49,6 +50,15 @@ def run(args: argparse.Namespace) -> int:
         print("ERRO: stake deve ser positivo e cashout maior que 1.")
         return 1
     signals_path = Path(args.signals or ("data/auto_live_signals.csv" if args.live else "data/auto_paper_signals.csv"))
+    uncertain = uncertain_signal(signals_path)
+    if uncertain:
+        print(
+            f"BLOQUEADO: entrada incerta na rodada {uncertain['entry_round_id']}. "
+            "Confira o histórico da conta e use blaze_auto.reconcile. "
+            "Reiniciar não libera novas apostas.",
+            flush=True,
+        )
+        return 3
     try:
         api = CrashApiClient(account_from_environment(), timeout=args.http_timeout) if args.live else None
         history = bootstrap_rounds(args.room_id, args.http_timeout)
@@ -187,8 +197,16 @@ def run(args: argparse.Namespace) -> int:
                         api.enter(str(stake), snapshot.round_id, str(cashout))
                         update_signal(signals_path, signal_id, {"status": "entered", "message": "API aceitou entrada"})
                         row["status"] = "entered"
+                    except BlazeUncertainOutcome as exc:
+                        update_signal(signals_path, signal_id, {"status": "unknown", "message": str(exc)})
+                        print(
+                            f"BOT PAUSADO | rodada={snapshot.round_id} | {exc}. "
+                            "Nenhum reenvio foi feito. Confira a conta e reconcilie o registro.",
+                            flush=True,
+                        )
+                        return 3
                     except BlazeApiError as exc:
-                        update_signal(signals_path, signal_id, {"status": "error", "message": str(exc)})
+                        update_signal(signals_path, signal_id, {"status": "rejected", "message": str(exc)})
                         print(f"ENTRADA FALHOU | {exc}", flush=True)
                         armed_trigger_id = ""
                         continue
