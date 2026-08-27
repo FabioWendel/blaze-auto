@@ -12,6 +12,7 @@ from .api_client import BlazeApiError, BlazeEntryNotSent, BlazeUncertainOutcome,
 from .bet_cli import account_from_environment
 from .crash_watcher import DEFAULT_CRASH_ROOM, DEFAULT_WS_URL, BlazeCrashWatcher
 from .history import fetch_history_page, normalize_record
+from .socket_status import SocketStatusLogger
 from .strategy import (
     DEFAULT_PATTERN,
     append_signal,
@@ -40,12 +41,35 @@ MAX_TICK_AGE_SECONDS = 2.0
 ENTRY_RETRY_DELAY_SECONDS = 0.5
 
 
+def tick_block_reason(watcher: BlazeCrashWatcher, snapshot: Any) -> str:
+    if watcher.last_error():
+        return "socket_indisponivel (erro ou desconexão)"
+    if not snapshot.round_id:
+        return "sem_tick"
+    age = time.time() - snapshot.received_at
+    if not math.isfinite(age) or age < 0:
+        return "idade_tick_invalida"
+    if age > MAX_TICK_AGE_SECONDS:
+        return f"tick_desatualizado (idade={age:.2f}s; limite={MAX_TICK_AGE_SECONDS:.2f}s)"
+    return ""
+
+
 def fresh_tick(watcher: BlazeCrashWatcher, snapshot: Any) -> bool:
-    return (
-        not watcher.last_error()
-        and bool(snapshot.round_id)
-        and 0 <= time.time() - snapshot.received_at <= MAX_TICK_AGE_SECONDS
-    )
+    return not tick_block_reason(watcher, snapshot)
+
+
+def signal_discard_reason(watcher: BlazeCrashWatcher, snapshot: Any, trigger_id: str) -> str:
+    if watcher.last_error():
+        return "socket_indisponivel (erro ou desconexão)"
+    if not snapshot.round_id:
+        return ""  # Ainda aguardando o primeiro tick.
+    if snapshot.round_id == trigger_id and snapshot.status == "complete":
+        # O resultado do gatilho pode ficar parado entre rodadas. Não é uma
+        # janela de entrada: aguardamos waiting NOVO antes de exigir frescor.
+        return ""
+    if snapshot.round_id != trigger_id and snapshot.status != "waiting":
+        return f"janela_nao_aberta (estado={snapshot.status or 'desconhecido'})"
+    return tick_block_reason(watcher, snapshot)
 
 
 def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
@@ -53,15 +77,22 @@ def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
     """Repete somente falha comprovadamente anterior ao envio, na mesma rodada."""
     deadline = time.monotonic() + window_seconds
     signal_id = row["signal_id"]
+    stop_reason = ""
 
     def window_open() -> bool:
+        nonlocal stop_reason
+        if stop_reason:
+            return False
         snapshot = watcher.snapshot()
-        return (
-            time.monotonic() < deadline
-            and snapshot.round_id == row["entry_round_id"]
-            and snapshot.status == "waiting"
-            and fresh_tick(watcher, snapshot)
-        )
+        if time.monotonic() >= deadline:
+            stop_reason = f"prazo_local_esgotado (limite={window_seconds:.2f}s)"
+        elif snapshot.round_id != row["entry_round_id"]:
+            stop_reason = f"rodada_alterada (atual={snapshot.round_id or 'desconhecida'})"
+        elif snapshot.status != "waiting":
+            stop_reason = f"janela_nao_aberta (estado={snapshot.status or 'desconhecido'})"
+        else:
+            stop_reason = tick_block_reason(watcher, snapshot)
+        return not stop_reason
 
     for attempt in range(1, max_attempts + 1):
         if not window_open():
@@ -78,6 +109,7 @@ def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
         except BlazeEntryNotSent as exc:
             update_signal(path, signal_id, {"status": "rejected", "message": f"tentativa {attempt}: {exc}"})
             if attempt == max_attempts:
+                stop_reason = f"limite_de_tentativas (total={max_attempts})"
                 break
             print(f"ENTRADA NÃO ENVIADA | tentativa={attempt} | verificando janela da mesma rodada", flush=True)
             retry_at = time.monotonic() + ENTRY_RETRY_DELAY_SECONDS
@@ -91,12 +123,17 @@ def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
             update_signal(path, signal_id, {"status": "entered", "message": f"API aceitou entrada; tentativa {attempt}"})
             row["status"] = "entered"
             return True
-    update_signal(path, signal_id, {"status": "rejected", "message": "sem entrada: janela indisponível ou limite de tentativas atingido"})
-    print("ENTRADA DESCARTADA | janela indisponível ou tentativas esgotadas | aguardando novo padrão", flush=True)
+    update_signal(path, signal_id, {"status": "rejected", "message": f"sem entrada: {stop_reason}"})
+    print(f"ENTRADA DESCARTADA | rodada={row['entry_round_id']} | motivo={stop_reason} | aguardando novo padrão", flush=True)
     return False
 
 
 def run(args: argparse.Namespace) -> int:
+    try:
+        socket_logger = SocketStatusLogger(args.socket_log_interval)
+    except ValueError as exc:
+        print(f"ERRO: {exc}")
+        return 1
     if (not math.isfinite(args.entry_window_seconds) or args.entry_window_seconds <= 0
             or args.max_entry_attempts < 1):
         print("ERRO: janela e máximo de tentativas devem ser positivos e finitos.")
@@ -136,6 +173,7 @@ def run(args: argparse.Namespace) -> int:
     pending = pending_signal(signals_path)
     entered_ids = entered_round_ids(signals_path)
     armed_trigger_id = ""
+    waiting_notice_trigger_id = ""
     if pending:
         completed = next(
             (row for row in history if str(row["id"]) == pending.get("entry_round_id")),
@@ -182,6 +220,7 @@ def run(args: argparse.Namespace) -> int:
     session_entries = 0
     try:
         while True:
+            socket_logger.log_if_due(watcher)
             for result in watcher.pop_completed_rounds():
                 round_id = str(result["id"])
                 if pending and pending.get("entry_round_id") == round_id:
@@ -213,6 +252,11 @@ def run(args: argparse.Namespace) -> int:
 
                 if round_id not in seen_ids:
                     # Um gatilho vale somente para a rodada imediatamente seguinte.
+                    if armed_trigger_id:
+                        print(
+                            f"SINAL DESCARTADO | gatilho={armed_trigger_id} | rodada={round_id}"
+                            " | motivo=nova_rodada_concluida | aguardando novo padrão", flush=True,
+                        )
                     armed_trigger_id = ""
                     seen_ids.add(round_id)
                     points.append(float(result["crash_point"]))
@@ -222,14 +266,22 @@ def run(args: argparse.Namespace) -> int:
                         print(f"PADRÃO {pattern} DETECTADO | gatilho={round_id}", flush=True)
 
             snapshot = watcher.snapshot()
-            if armed_trigger_id and (
-                watcher.last_error()
-                or (snapshot.round_id and not fresh_tick(watcher, snapshot))
-                or (snapshot.round_id and snapshot.round_id != armed_trigger_id
-                    and snapshot.status != "waiting")
-            ):
-                print("SINAL DESCARTADO | janela fechada ou socket sem dados recentes | aguardando novo padrão", flush=True)
-                armed_trigger_id = ""
+            if armed_trigger_id:
+                discard_reason = signal_discard_reason(watcher, snapshot, armed_trigger_id)
+                if discard_reason:
+                    print(
+                        f"SINAL DESCARTADO | gatilho={armed_trigger_id} | rodada={snapshot.round_id}"
+                        f" | estado={snapshot.status} | motivo={discard_reason} | aguardando novo padrão",
+                        flush=True,
+                    )
+                    armed_trigger_id = ""
+                elif (snapshot.round_id == armed_trigger_id and snapshot.status == "complete"
+                      and waiting_notice_trigger_id != armed_trigger_id):
+                    print(
+                        f"SINAL ARMADO | gatilho={armed_trigger_id} | aguardando abertura da próxima rodada",
+                        flush=True,
+                    )
+                    waiting_notice_trigger_id = armed_trigger_id
             if (
                 armed_trigger_id
                 and not pending
@@ -329,6 +381,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="inclui a primeira tentativa; repete somente ConnectTimeout")
     parser.add_argument("--reconnect-seconds", type=float, default=3.0)
     parser.add_argument("--interval", type=float, default=0.05)
+    parser.add_argument("--socket-log-interval", type=float, default=10.0,
+                        help="mostra saúde do socket a cada N segundos (padrão: 10)")
     parser.add_argument("--verbose", action="store_true")
     return parser
 

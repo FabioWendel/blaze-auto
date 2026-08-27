@@ -222,8 +222,19 @@ automática em `5x`.
 ### Falha na entrada e janela de tempo
 
 Se a API recusar a entrada, o bot descarta o sinal e espera **um novo padrão**.
-O sinal antigo não é reaproveitado em outra rodada. Se a rodada já estiver em
+O sinal antigo não é reaproveitado em outra rodada. Se a rodada de entrada já estiver em
 `graphing`/`complete`, ou o socket estiver desconectado/sem tick recente, não entra.
+
+Enquanto o socket ainda mostra `complete` da **rodada que gerou o padrão**, o
+bot mantém o sinal armado, mesmo se esse último tick tiver mais de 2 segundos.
+Isso é espera entre rodadas, não autorização para apostar com dados antigos.
+Ao chegar a próxima rodada, continua exigindo `waiting` recente antes de enviar.
+Erro/desconexão descarta o sinal; um novo resultado também invalida o gatilho antigo.
+
+O log mostra `SINAL ARMADO | ... | aguardando abertura da próxima rodada` uma
+vez por gatilho. Nos descartes, `motivo=` distingue socket indisponível, tick
+desatualizado (com idade), estado fora de `waiting`, nova rodada concluída,
+troca de rodada durante uma tentativa, prazo local e tentativas esgotadas.
 
 O bot só repete uma falha `ConnectTimeout` (conexão não estabelecida, pedido
 não enviado), sempre na **mesma rodada ainda em `waiting`**, com tick recebido
@@ -283,6 +294,27 @@ python -m blaze_auto.auto_bot --live --stake 0.10 --auto-cashout-at 5.00 --max-s
 
 Use o modo real somente depois da validação em paper e com as variáveis do
 `.env` configuradas.
+
+### Ver se o socket continua conectado
+
+O `auto_bot` mostra automaticamente um status a cada **10 segundos** e quando
+observa mudança de conexão, mesmo sem encontrar um padrão. Exemplo ilustrativo:
+
+```text
+[20:15:10] SOCKET | CONECTADO | tentativa de conexão=1 | última mensagem=0.2s atrás | crash.tick=0.2s atrás (RECENTE) | rodada=exemplo | estado=waiting
+[20:15:20] SOCKET | RECONECTANDO | tentativa de conexão=2 | última mensagem=10.2s atrás | crash.tick=10.2s atrás (SEM TICK RECENTE) | rodada=exemplo | estado=complete
+```
+
+`CONECTADO` indica abertura do WebSocket; a idade da última mensagem (inclusive
+ping/pong) e do último `crash.tick` mostra se há atividade. **Conexão aberta não
+garante ticks recentes.** `SEM TICK RECENTE` significa mais de 2 segundos sem
+tick e pode ocorrer entre rodadas; sozinho, não comprova desconexão.
+Depois de reconectar, o indicador aguarda um novo tick, sem reutilizar o anterior.
+
+Para mostrar a cada 5 segundos, acrescente `--socket-log-interval 5` ao seu
+comando. O indicador não exige `--verbose`, não altera as regras de entrada e
+não exibe tokens nem conteúdo bruto das mensagens. Uma chamada HTTP em andamento
+pode atrasar a próxima linha de status; a leitura do socket continua em background.
 
 ### Proteções que continuam ativas
 

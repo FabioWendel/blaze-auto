@@ -7,6 +7,7 @@ import pytest
 
 from blaze_auto import auto_bot, reconcile
 from blaze_auto.api_client import BlazeUncertainOutcome
+from blaze_auto.crash_watcher import SocketConnectionStatus
 from blaze_auto.strategy import append_signal, entered_round_ids, read_signals, risk_status, uncertain_signal
 
 
@@ -61,6 +62,8 @@ def test_reset_stops_loop_and_persists_unknown(tmp_path, monkeypatch):
             return SimpleNamespace(status="waiting", round_id="next-round", received_at=time.time())
         def last_error(self):
             return ""
+        def connection_status(self):
+            return SocketConnectionStatus("CONECTADO", 1, 0, 0, "next-round", "waiting")
     monkeypatch.setattr(auto_bot, "CrashApiClient", Api)
     monkeypatch.setattr(auto_bot, "BlazeCrashWatcher", Watcher)
     args = auto_bot.build_parser().parse_args(["--live", "--signals", str(path), "--max-session-entries", "0"])

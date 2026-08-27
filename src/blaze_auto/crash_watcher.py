@@ -21,6 +21,16 @@ DEFAULT_ORIGIN = "https://blaze.bet.br"
 
 
 @dataclass(frozen=True)
+class SocketConnectionStatus:
+    state: str
+    attempts: int
+    message_age: float | None
+    tick_age: float | None
+    round_id: str
+    round_status: str
+
+
+@dataclass(frozen=True)
 class CrashSnapshot:
     status: str = ""
     round_id: str = ""
@@ -67,6 +77,10 @@ class BlazeCrashWatcher:
         self._ws_app: Any | None = None
         self._stop = threading.Event()
         self._last_error = ""
+        self._connection_state = "CONECTANDO"
+        self._connection_attempts = 0
+        self._last_message_monotonic: float | None = None
+        self._last_tick_monotonic: float | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -78,6 +92,7 @@ class BlazeCrashWatcher:
     def stop(self, timeout: float = 5.0) -> None:
         self._stop.set()
         with self._lock:
+            self._connection_state = "PARADO"
             app = self._ws_app
         if app is not None:
             app.close()
@@ -91,6 +106,21 @@ class BlazeCrashWatcher:
     def last_error(self) -> str:
         with self._lock:
             return self._last_error
+
+    def connection_status(self) -> SocketConnectionStatus:
+        with self._lock:
+            now = time.monotonic()
+            state = self._connection_state
+            if self._thread is not None and not self._thread.is_alive() and not self._stop.is_set():
+                state = "DESCONECTADO"
+            return SocketConnectionStatus(
+                state=state,
+                attempts=self._connection_attempts,
+                message_age=None if self._last_message_monotonic is None else max(0, now - self._last_message_monotonic),
+                tick_age=None if self._last_tick_monotonic is None else max(0, now - self._last_tick_monotonic),
+                round_id=self._snapshot.round_id if self._last_tick_monotonic is not None else "",
+                round_status=self._snapshot.status if self._last_tick_monotonic is not None else "",
+            )
 
     def bets_snapshot(self) -> CrashBetsSnapshot:
         with self._lock:
@@ -109,9 +139,13 @@ class BlazeCrashWatcher:
         except ImportError:
             with self._lock:
                 self._last_error = "dependência websocket-client não instalada"
+                self._connection_state = "DESCONECTADO"
             return
 
         while not self._stop.is_set():
+            with self._lock:
+                self._connection_attempts += 1
+                self._connection_state = "CONECTANDO" if self._connection_attempts == 1 else "RECONECTANDO"
             app = websocket.WebSocketApp(
                 self.url,
                 header=[
@@ -121,6 +155,8 @@ class BlazeCrashWatcher:
                     "Cache-Control: no-cache",
                 ],
                 on_message=self._on_message,
+                on_open=self._on_open,
+                on_pong=self._on_pong,
                 on_error=self._on_error,
                 on_close=self._on_close,
             )
@@ -130,19 +166,35 @@ class BlazeCrashWatcher:
             with self._lock:
                 if self._ws_app is app:
                     self._ws_app = None
+                self._connection_state = "PARADO" if self._stop.is_set() else "RECONECTANDO"
             if not self._stop.wait(self.reconnect_seconds):
                 continue
+
+    def _on_open(self, _ws: Any) -> None:
+        with self._lock:
+            self._connection_state = "PARADO" if self._stop.is_set() else "CONECTADO"
+            # Uma conexão nova não herda indicadores de atividade da anterior.
+            self._last_message_monotonic = None
+            self._last_tick_monotonic = None
+
+    def _on_pong(self, _ws: Any, _message: Any) -> None:
+        with self._lock:
+            self._last_message_monotonic = time.monotonic()
 
     def _on_error(self, _ws: Any, error: Any) -> None:
         with self._lock:
             self._last_error = str(error)
+            self._connection_state = "PARADO" if self._stop.is_set() else "RECONECTANDO"
 
     def _on_close(self, _ws: Any, _code: Any, _message: Any) -> None:
         with self._lock:
+            self._connection_state = "PARADO" if self._stop.is_set() else "RECONECTANDO"
             if not self._last_error and not self._stop.is_set():
                 self._last_error = "websocket fechado"
 
     def _on_message(self, ws: Any, message: str) -> None:
+        with self._lock:
+            self._last_message_monotonic = time.monotonic()
         if message.startswith("0"):
             ws.send("40")
             return
@@ -160,6 +212,7 @@ class BlazeCrashWatcher:
             completed = normalize_completed_round(payload)
             with self._lock:
                 self._snapshot = snapshot
+                self._last_tick_monotonic = time.monotonic()
                 if completed and completed["id"] not in self._emitted_ids:
                     self._rounds.append(completed)
                     self._emitted_ids.add(completed["id"])
