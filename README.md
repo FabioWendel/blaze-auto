@@ -1,8 +1,10 @@
-# Blaze Crash (`crash.tick`)
+# Blaze Auto — Crash e Double
 
-Projeto separado para monitorar e coletar resultados do Blaze Crash. Ele usa o
-mesmo transporte Socket.IO/Engine.IO do projeto Double, mas assina a sala e o
-evento próprios do Crash.
+Monitoramento, coleta e automação do Crash por padrões, com login local pelo
+navegador e menu para executar Crash ou Double. O Double tem uma sequência
+limitada de dobragens com alternância de vermelho/preto. Simulação é o padrão;
+apostas reais exigem autorização explícita. Padrões passados e dobragens não
+garantem ganhos nem recuperação de perdas.
 
 ## O que foi confirmado no socket ao vivo
 
@@ -55,6 +57,130 @@ Todos os comandos deste README devem ser executados dentro da pasta clonada
 O monitor, o coletor histórico e o paper trading funcionam sem credenciais. Os
 comandos com `--live` exigem uma conta Blaze autenticada e um arquivo `.env`
 local.
+
+### Opção 1: capturar pelo navegador após fazer login
+
+Instale o suporte opcional e execute dentro da pasta `blaze-auto`:
+
+```powershell
+python -m pip install -e ".[browser]"
+python -m blaze_auto.login_cli
+```
+
+O comando abre o executável do **Google Chrome instalado diretamente**, em uma
+janela com perfil temporário separado. O modo padrão é `--launch-mode normal`:
+não usa o inicializador de automação do Playwright; conecta a observação das
+requisições via Chrome DevTools Protocol, somente em `127.0.0.1`.
+Isso **não significa um navegador sem instrumentação nem garante evitar bloqueios**.
+Faça login
+manualmente e permaneça no Crash. Se solicitado no terminal, abra seu perfil e
+a carteira BRL nessa mesma janela. **Não é necessário fazer uma aposta.**
+
+Ao observar respostas autenticadas com token, usuário, rank e carteira BRL, o
+comando cria/atualiza o `.env` e mantém a janela e o programa abertos, mostrando:
+
+```text
+ESCOLHA O JOGO
+1 - Crash
+2 - Double
+0 - Sair e fechar a janela de captura
+```
+
+Digite `1` ou `2` para abrir o jogo na **mesma janela já logada** e configurar
+a automação. Em seguida escolha **simulação** (Enter/padrão), **apostas reais**,
+**só abrir o site**, ou voltar. Configure o valor inicial, limites diários e
+quantidade de entradas da sessão (`0` = contínuo; `1` = uma entrada e seu resultado).
+
+- **Crash:** executa o mesmo `blaze_auto.auto_bot` já existente. O menu sugere
+  padrão `MABBM` e autoretirada `5.00x`; ambos podem ser alterados. No campo
+  **Padrão Crash**, digite `2` para experimentar `BBBBM` com retirada sugerida
+  de `1.50x`. Essa opção teve prejuízo no teste histórico e não é recomendação
+  para dinheiro real. Selecione simulação para acompanhá-la sem apostar.
+- **Double:** executa `blaze_auto.double_bot`, com a sequência descrita abaixo.
+- **Modo real:** mostra um resumo e exige digitar `REAL` antes de iniciar.
+  Entradas e resultados aparecem no terminal; não é necessário clicar em apostar.
+
+Só um bot é executado por vez nesse menu. `Ctrl+C` durante a automação interrompe
+o bot e volta ao menu; **não cancela uma aposta já enviada**. Ao atingir o limite
+de entradas da sessão, aguarda o resultado da última aposta antes de voltar.
+`0` ou `Ctrl+C` no menu principal fecha a janela criada pelo programa e mantém o
+`.env`. Fechar apenas o navegador não é um comando de parada do bot: use `Ctrl+C`
+no terminal. Não execute outra instância do bot ao mesmo tempo.
+
+A captura de credenciais é desligada antes do menu. Ao iniciar um bot pelo menu,
+os valores do `.env` recém-salvo têm prioridade sobre credenciais antigas do
+terminal, sem imprimir seus valores. Navegar entre jogos não regrava o `.env`.
+
+Para somente capturar e encerrar, como antes:
+
+```powershell
+python -m blaze_auto.login_cli --login-only
+```
+
+Configurações
+não relacionadas e o `BLAZE_ROOM_ID` existente são preservados (padrão 4 se ausente).
+Os campos opcionais de sessão/versão antigos são limpos se não vierem na captura.
+Com `--login-only`, não inicia o bot nem envia entradas/cashouts.
+
+O formato atual de inicialização da conta é reconhecido em `/api/bootstrap/me`:
+`user.username`, `user.xp.rank` e `wallets[].currency.type` (carteira BRL), usando
+o `Authorization` da própria requisição autenticada. Os formatos anteriores de
+perfil/carteira continuam aceitos. O terminal informa os nomes dos campos já
+capturados e dos que ainda faltam, sem mostrar seus valores.
+
+Para usar o Microsoft Edge instalado:
+
+```powershell
+python -m blaze_auto.login_cli --browser edge
+```
+
+Se não tiver Chrome/Edge, use o Chromium do Playwright:
+
+```powershell
+python -m playwright install chromium
+python -m blaze_auto.login_cli --browser chromium
+```
+
+O prazo padrão para login é de 5 minutos; ajuste com `--timeout-seconds 600`.
+O script observa somente as APIs permitidas da Blaze nessa janela: não lê seu
+perfil pessoal do navegador, não exporta senhas/cookies, não imprime tokens e não
+grava arquivos de tráfego. O Chrome pode manter dados da sessão no perfil temporário
+durante o login; esse perfil é removido ao encerrar normalmente. Se o computador
+desligar ou a execução for encerrada à força, ele pode permanecer na pasta temporária.
+CAPTCHA e autenticação em duas etapas, quando houver,
+são concluídos por você normalmente no site.
+
+O Chrome atual exige um diretório de dados separado para depuração, conforme a
+[documentação do Chrome](https://developer.chrome.com/blog/remote-debugging-port).
+Não é uma conexão com o seu Chrome pessoal já aberto: suas abas e seu perfil
+normal não são alterados nem fechados. A porta de depuração permite controle
+desse navegador por processos locais; não use essa janela para outros sites
+e nunca exponha a porta na rede.
+
+Se a instalação não for encontrada, use `--browser-path` com o caminho do
+executável. Para voltar ao inicializador anterior, use `--launch-mode playwright`.
+Se o botão de login continuar desabilitado, a causa precisa ser verificada no
+site (validação do formulário, recursos não carregados, CAPTCHA ou restrição).
+O comando não resolve nem contorna essas verificações.
+
+Se faltar um campo ou a janela for fechada antes da captura completa, o `.env`
+permanece intacto. Não mistura os dados existentes com uma captura parcial. Se
+forem observadas várias carteiras BRL, não escolhe uma arbitrariamente: informe
+`--wallet-id ID_DA_CARTEIRA` para selecionar uma das carteiras observadas.
+O site pode mudar as rotas/formatos de perfil e carteira; nesse caso a captura
+informará os nomes dos campos ausentes e exigirá adaptação, sem inventar valores.
+
+O `.env` contém credenciais em texto e deve permanecer privado. Ele e os arquivos
+temporários `.env.*` são ignorados pelo Git. O menu usa a captura nova. Ao iniciar
+os bots **diretamente pela linha de comando**, reinicie-os após renovar a captura.
+Nesses comandos diretos, remova variáveis `BLAZE_*` antigas do terminal ou abra
+outro terminal: variáveis do ambiente têm prioridade sobre o arquivo `.env`.
+Quando o token expirar, execute o comando de login novamente.
+
+### Opção 2: preencher manualmente pelo DevTools
+
+Se já tiver um `.env`, edite-o; não copie o modelo por cima dele. Para criar um
+arquivo pela primeira vez:
 
 No Windows/PowerShell:
 
@@ -212,12 +338,61 @@ envia apostas, mantém o registro e preserva a proteção contra duplicar a roda
 Não apague o CSV nem use outro arquivo para contornar uma entrada incerta.
 Depois da conferência, inicie o bot novamente com o comando desejado.
 
-## Bot automático por sequência
+## Crash: bot automático por sequência
 
 O bot acompanha `crash.tick`, classifica cada resultado como `B` (`<2x`), `M`
 (`2x–4,99x`) ou `A` (`>=5x`) e arma uma entrada para a próxima rodada `waiting`
 quando encontra o padrão configurado. O padrão inicial é `MABBM`, com retirada
 automática em `5x`.
+
+### Opção mais frequente: baixas + média (experimental)
+
+O preset `baixas-media` espera **quatro resultados abaixo de 2x**, seguidos de
+**uma média concluída entre 2x e menos de 5x** (`BBBBM`). Só depois arma a
+entrada na **próxima** rodada em `waiting`, com retirada sugerida em `1.50x`.
+Não entra durante a média que confirmou o sinal. A stake é fixa; não há dobragem.
+
+No histórico local de 101.173 rodadas, ocorreram aproximadamente 77 sinais/dia,
+contra 14 do `MABBM`. São oportunidades teóricas: as janelas e os limites diários
+continuam valendo, incluindo o máximo padrão de 20 entradas/dia.
+
+**Mais sinais não deram mais lucro:** `BBBBM/1.50x` acertou 62,08% no trecho
+final do teste, abaixo dos 66,67% necessários para empatar. Foram 530 entradas,
+329 ganhos e 201 perdas: prejuízo de 36,50 unidades de stake (ROI −6,89%).
+As 32 combinações frequentes analisadas tiveram ROI negativo nesse trecho.
+Veja [metodologia e comparação](docs/crash-pattern-analysis.md).
+
+Para testar continuamente **sem dinheiro real**, a partir da pasta do projeto:
+
+```powershell
+python -m blaze_auto.auto_bot --preset baixas-media --stake 1 --max-session-entries 0
+```
+
+Para fazer só uma entrada simulada, esperar o resultado e encerrar:
+
+```powershell
+python -m blaze_auto.auto_bot --preset baixas-media --stake 1 --max-session-entries 1
+```
+
+No menu após o login: **Crash → Simulação → Padrão Crash: `2`**; aceite a
+retirada sugerida `1.50`. O preset não ativa `--live`, não altera o `.env`, não
+troca o padrão de outras execuções e não aumenta os limites de risco. Os modos
+reais existentes continuam exigindo `--live` na CLI ou confirmação `REAL` no menu.
+Não execute dois bots ao mesmo tempo sobre a mesma conta/ledger.
+
+As opções explícitas `--pattern` e `--auto-cashout-at` substituem as do preset.
+Sem preset, permanece `MABBM/5.00x`; isso preserva a configuração, não certifica
+que ela será lucrativa. Uma sequência de baixas não torna a próxima média devida.
+
+Reproduzir a análise offline, sem credenciais nem apostas:
+
+```powershell
+python -m blaze_auto.crash_analysis --input data/crash_history_30d.csv
+```
+
+O relatório fica em `data/crash_analysis/report.json` (ignorado pelo Git).
+O CSV original não é modificado. A análise usa stake de uma unidade, separa
+treino/validação/teste por datas e também inclui uma ilustração com limites diários.
 
 ### Falha na entrada e janela de tempo
 
@@ -297,8 +472,14 @@ Use o modo real somente depois da validação em paper e com as variáveis do
 
 ### Ver se o socket continua conectado
 
-O `auto_bot` mostra automaticamente um status a cada **10 segundos** e quando
-observa mudança de conexão, mesmo sem encontrar um padrão. Exemplo ilustrativo:
+Os logs periódicos do socket ficam **desligados por padrão**, tanto no Crash
+quanto no Double e no menu após login. Entradas, resultados, descartes e pausas
+importantes continuam aparecendo. O monitoramento e as verificações de conexão
+continuam ativos: somente a impressão desses status foi desativada.
+
+Para diagnóstico, acrescente `--socket-log-interval 10` ao comando do bot.
+Isso habilita um status a cada 10 segundos e quando observa mudança de conexão,
+mesmo sem encontrar um padrão. Exemplo ilustrativo:
 
 ```text
 [20:15:10] SOCKET | CONECTADO | tentativa de conexão=1 | última mensagem=0.2s atrás | crash.tick=0.2s atrás (RECENTE) | rodada=exemplo | estado=waiting
@@ -312,7 +493,8 @@ tick e pode ocorrer entre rodadas; sozinho, não comprova desconexão.
 Depois de reconectar, o indicador aguarda um novo tick, sem reutilizar o anterior.
 
 Para mostrar a cada 5 segundos, acrescente `--socket-log-interval 5` ao seu
-comando. O indicador não exige `--verbose`, não altera as regras de entrada e
+comando; `--socket-log-interval 0` desliga novamente. O indicador não exige
+`--verbose`, não altera as regras de entrada e
 não exibe tokens nem conteúdo bruto das mensagens. Uma chamada HTTP em andamento
 pode atrasar a próxima linha de status; a leitura do socket continua em background.
 
@@ -325,6 +507,109 @@ O bot também impede uma segunda entrada na mesma rodada após reinício.
 Paper e live são gravados separadamente em `data/auto_paper_signals.csv` e
 `data/auto_live_signals.csv`.
 
+## Double: última cor, dobragem e alternância
+
+Usa o evento público `double.tick` na sala `double_room_1`. As cores são branco
+(`0`), vermelho (`1`) e preto (`2`). O resultado é processado somente no estado
+`complete`, mesmo que cor e número já apareçam durante `rolling`.
+
+A regra implementada é:
+
+1. Esperar um resultado concluído vermelho ou preto; apostar nessa mesma cor na
+   **próxima** rodada `waiting`. Não tenta apostar na rodada já encerrada.
+2. Se perder, dobrar o valor e apostar na cor oposta na próxima rodada.
+3. Continuar alternando a cada perda: início vermelho → preto → vermelho;
+   início preto → vermelho → preto.
+4. Branco conta como perda para uma aposta aberta em vermelho/preto. Sem aposta
+   aberta, branco não inicia sequência: espera o próximo resultado vermelho/preto.
+   Não há aposta adicional de proteção no branco.
+5. Ao ganhar, restaurar o valor inicial e esperar **outro** resultado vermelho/preto.
+   O próprio resultado vencedor não inicia uma nova sequência.
+6. Ao perder a última dobragem permitida, encerrar a sessão. Não continua dobrando.
+
+O padrão é **3 dobragens**, além da entrada inicial. Com base de R$ 0,10, os
+valores são R$ 0,10 → R$ 0,20 → R$ 0,40 → R$ 0,80; perder todas custa R$ 1,50.
+Com base de R$ 1, a mesma sequência custa R$ 15. Dobrar aumenta rapidamente a
+exposição e não torna uma cor mais provável. Este recurso não foi validado com
+apostas reais; comece em simulação e confira o comportamento e os registros.
+
+Simulação contínua (não exige login):
+
+```powershell
+python -m blaze_auto.double_bot --stake 0.10 --max-gales 3
+```
+
+Uma entrada simulada e seu resultado, **sem executar dobragens seguintes**:
+
+```powershell
+python -m blaze_auto.double_bot --stake 0.10 --max-session-entries 1
+```
+
+Execução real, somente se decidir autorizar e após configurar o `.env`:
+
+```powershell
+python -m blaze_auto.double_bot --live --stake 0.10 --max-gales 3 --daily-stop-loss 5.00 --daily-take-profit 5.00 --max-daily-entries 20
+```
+
+Sem `--live`, nunca envia apostas. No comando direto, `--live` é a autorização;
+a confirmação digitada `REAL` é específica do menu. A sala do Double é sempre
+`1`, independentemente de `BLAZE_ROOM_ID=4` usado pelo Crash.
+
+### Limites, falhas e retomada do Double
+
+Os padrões são perda diária máxima de R$ 5, ganho diário de R$ 5 e 20 entradas
+por dia **UTC**, contando cada dobragem como uma entrada. Esses limites são
+obrigatoriamente positivos no Double. `--max-session-entries 0` é contínuo e
+`--max-gales 0` desliga dobragens; aceita no máximo 10 dobragens configuradas.
+Antes de cada entrada, verifica se uma perda integral ultrapassaria o orçamento
+diário de perda líquida. Por exemplo, base R$ 1 e stop-loss R$ 5 permitem perder
+R$ 1 e R$ 2, mas bloqueiam a próxima entrada de R$ 4.
+
+Se perder a janela ou a conexão, descarta a sequência e espera novo vermelho/preto;
+não leva uma dobragem atrasada para outra rodada. Recusa da API não conta como
+perda nem aumenta o valor. Só `ConnectTimeout` comprovadamente anterior ao envio
+pode ser repetido, na mesma janela recente, usando as mesmas proteções do Crash.
+Resposta incerta, mudança de janela durante o POST ou resposta incompatível
+interrompem o bot e bloqueiam reinícios até conferência manual.
+
+Os CSVs são separados: `data/double_paper_signals.csv` e
+`data/double_live_signals.csv`. Guardam cor apostada, dobragem, valor, sequência,
+resultado e lucro líquido calculado (vermelho/preto: +stake ao ganhar, -stake
+ao perder). Esse cálculo pelo resultado público **não é uma conferência do
+saldo da conta**. O status periódico do socket é opcional; use
+`--socket-log-interval 10` para exibir `double.tick` durante diagnóstico.
+
+### Confirmação da entrada Double
+
+A resposta usada pelo cliente público da Blaze contém a cor na raiz (`color`)
+e valor/moeda em `bet.amount` e `bet.currency_type`. A validação aceita esse
+formato **sem exigir `bet.id` ou `bet.color`**; o formato anterior com cor dentro
+de `bet` também é aceito. Se ambas as cores vierem, precisam coincidir. A origem
+deste contrato é o handler de `/roulette_bets` e o reducer `DOUBLE_V2/OWN_BET`
+no [código público da Blaze](https://blaze.bet.br/static/js/index~27.c094d883.js).
+
+Um HTTP 2xx sozinho não basta: continuam obrigatórias a cor solicitada, o valor
+e BRL, sem indicação de erro. IDs explícitos da rodada, quando presentes, são
+comparados. Respostas incompatíveis ou perdidas continuam pausando sem reenviar.
+O terminal agora mostra o motivo da pausa e a rodada, em vez de só “aceitação
+incerta”. Para erros de formato, registra apenas nomes conhecidos de campos e
+seus tipos; nunca o JSON bruto, tokens, headers ou valores pessoais. A resposta
+original da tentativa antiga não foi armazenada, portanto não pode ser reconstruída.
+
+Uma aposta aceita mas sem resultado observado antes de interromper também
+bloqueia o reinício. Confira o histórico da conta e reconcilie, por exemplo:
+
+```powershell
+python -m blaze_auto.reconcile --signals data/double_live_signals.csv --round-id ID_DA_RODADA --outcome loss --profit=-0.10 --confirmed
+```
+
+Para simulação interrompida, use o CSV `double_paper_signals.csv` e confira o
+resultado público da rodada. Não apague ou troque o ledger para ignorar uma
+pendência. Após reconciliar, uma nova execução começa esperando novo vermelho/preto,
+sem recuperar dobragens antigas. Não há ajuste automático de saldo ou apostas
+de recuperação. A API privada pode mudar; respostas fora do formato esperado
+exigem verificação, sem reenviar apostas.
+
 ## Testes
 
 Instale as dependências de desenvolvimento e execute:
@@ -334,7 +619,52 @@ python -m pip install -r requirements-dev.txt
 pytest
 ```
 
-## Baixar um mês de histórico
+O teste de navegador é opcional, usa Chrome em modo headless e substitui toda a
+rede da página por respostas fictícias (não faz login nem acessa a conta). Para
+incluí-lo no PowerShell, após instalar `.[browser]` e ter Chrome instalado:
+
+```powershell
+$env:BLAZE_RUN_BROWSER_TEST = "1"
+python -m pytest -q
+```
+
+## Baixar o histórico público do Double
+
+O coletor abaixo não usa login nem envia apostas. Retorna as rodadas públicas
+com ID, data UTC, cor (`0` branco, `1` vermelho, `2` preto), número e server seed.
+Não confunda com `/api/game_provider_rounds`, que retorna apostas da conta.
+
+```powershell
+python -m blaze_auto.double_history_cli --start 2026-07-30T04:00:00.000Z --end 2026-08-29T03:59:59.999Z --output data/double_history/2026-07-30_2026-08-28
+```
+
+O exemplo corresponde a 30/07–28/08 no horário de Manaus (UTC−4). Se o fim
+solicitado ainda não estiver disponível, o coletor fixa o fim em agora menos
+2 minutos para excluir rodadas em andamento e manter a paginação estável.
+O intervalo solicitado e o efetivamente coletado ficam em `request.json`.
+Uma execução retomada mantém o mesmo fim; use uma nova pasta para atualizar
+a cobertura depois.
+
+O campo `total_pages` dessa API representa a **quantidade de registros**, inclusive
+como texto numérico, e cada página contém até 100 registros. O coletor verifica
+o tamanho de cada página, IDs duplicados, consistência entre cor/número, datas,
+contagem final e uma página vazia após o fim. Se algo divergir, não declara a
+coleta concluída. Usa até 2 conexões com espaçamento compartilhado e recua ao
+receber HTTP 429. Não aumente a carga para contornar limites da API.
+
+Os JSONs ficam na pasta escolhida, ignorada pelo Git quando estiver dentro de
+`data/double_history/`:
+
+- `double_history.json`: rodadas em ordem cronológica e metadados da cobertura.
+- `hourly_counts.json`: contagens por hora de Manaus, incluindo brancos, e por dia.
+- `summary.json`: totais e verificações de integridade.
+- `pages/`: cache para retomar com o mesmo comando após interrupção.
+
+Contagens por horário são descritivas; diferenças históricas não demonstram
+previsibilidade. Horas/dias incompletos e testes de vários horários precisam
+ser considerados antes de qualquer conclusão. O coletor não altera o bot.
+
+## Baixar um mês de histórico do Crash
 
 A API histórica é paginada em blocos de 100 rodadas. O coletor percorre as
 páginas, tenta novamente falhas transitórias, elimina IDs duplicados, aplica o

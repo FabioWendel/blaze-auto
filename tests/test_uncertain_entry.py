@@ -98,3 +98,34 @@ def test_confirmed_loss_counts_in_daily_limits(tmp_path):
     assert not risk.allowed
     assert risk.daily_entries == 1
     assert risk.daily_profit == Decimal("-1.00")
+
+
+def test_crash_session_limit_checked_before_new_waiting_same_poll(tmp_path, monkeypatch):
+    path = tmp_path / "signals.csv"
+    monkeypatch.setattr(auto_bot, "bootstrap_rounds", lambda *a: [{"id": "trigger", "crash_point": 3}])
+    monkeypatch.setattr(auto_bot.SocketStatusLogger, "log_if_due", lambda *a: None)
+    class Watcher:
+        poll = 0
+        def __init__(self, **kwargs):
+            pass
+        def start(self):
+            pass
+        def stop(self):
+            pass
+        def last_error(self):
+            return ""
+        def pop_completed_rounds(self):
+            self.poll += 1
+            if self.poll == 1:
+                return []
+            if self.poll == 2:
+                return [{"id": "entry", "crash_point": 3, "updated_at": "2026-08-28T12:00:00Z"}]
+            raise AssertionError("must exit after first settled entry")
+        def snapshot(self):
+            return SimpleNamespace(status="waiting", round_id="entry" if self.poll == 1 else "later",
+                                   received_at=time.time())
+    monkeypatch.setattr(auto_bot, "BlazeCrashWatcher", Watcher)
+    args = auto_bot.build_parser().parse_args(["--signals", str(path), "--pattern", "M", "--auto-cashout-at", "2",
+                                              "--max-session-entries", "1", "--interval", "0.0001"])
+    assert auto_bot.run(args) == 0
+    assert len(read_signals(path)) == 1

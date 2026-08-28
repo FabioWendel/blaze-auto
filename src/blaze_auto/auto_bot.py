@@ -6,15 +6,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .api_client import BlazeApiError, BlazeEntryNotSent, BlazeUncertainOutcome, CrashApiClient
 from .bet_cli import account_from_environment
 from .crash_watcher import DEFAULT_CRASH_ROOM, DEFAULT_WS_URL, BlazeCrashWatcher
 from .history import fetch_history_page, normalize_record
 from .socket_status import SocketStatusLogger
+from .crash_presets import EXPERIMENTAL_WARNING, PRESETS, resolve_preset
 from .strategy import (
-    DEFAULT_PATTERN,
     append_signal,
     calculate_profit,
     entered_round_ids,
@@ -73,7 +73,8 @@ def signal_discard_reason(watcher: BlazeCrashWatcher, snapshot: Any, trigger_id:
 
 
 def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
-                    row: dict[str, Any], window_seconds: float, max_attempts: int) -> bool:
+                    row: dict[str, Any], window_seconds: float, max_attempts: int, *,
+                    send_entry: Callable[[float], Any] | None = None) -> bool:
     """Repete somente falha comprovadamente anterior ao envio, na mesma rodada."""
     deadline = time.monotonic() + window_seconds
     signal_id = row["signal_id"]
@@ -102,8 +103,11 @@ def enter_in_window(api: CrashApiClient, watcher: BlazeCrashWatcher, path: Path,
         if not window_open():
             break
         try:
-            api.enter(row["stake"], row["entry_round_id"], row["auto_cashout_at"],
-                      timeout=deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if send_entry is not None:
+                send_entry(remaining)
+            else:
+                api.enter(row["stake"], row["entry_round_id"], row["auto_cashout_at"], timeout=remaining)
         except BlazeUncertainOutcome:
             raise
         except BlazeEntryNotSent as exc:
@@ -138,19 +142,22 @@ def run(args: argparse.Namespace) -> int:
             or args.max_entry_attempts < 1):
         print("ERRO: janela e máximo de tentativas devem ser positivos e finitos.")
         return 1
-    pattern = args.pattern.strip().upper()
+    preset_name = getattr(args, "preset", "original")
+    pattern, cashout_text = resolve_preset(preset_name, args.pattern, args.auto_cashout_at)
     if not pattern or any(char not in {"B", "M", "A"} for char in pattern):
         print("ERRO: --pattern aceita somente B, M e A.")
         return 1
     try:
         stake = Decimal(args.stake)
-        cashout = Decimal(args.auto_cashout_at)
+        cashout = Decimal(cashout_text)
     except InvalidOperation:
         print("ERRO: stake e cashout devem ser números válidos.")
         return 1
-    if stake <= 0 or cashout <= 1:
-        print("ERRO: stake deve ser positivo e cashout maior que 1.")
+    if not stake.is_finite() or not cashout.is_finite() or stake <= 0 or cashout <= 1:
+        print("ERRO: stake deve ser positivo e cashout maior que 1, ambos finitos.")
         return 1
+    if PRESETS[preset_name].experimental:
+        print(EXPERIMENTAL_WARNING, flush=True)
     signals_path = Path(args.signals or ("data/auto_live_signals.csv" if args.live else "data/auto_paper_signals.csv"))
     uncertain = uncertain_signal(signals_path)
     if uncertain:
@@ -265,6 +272,10 @@ def run(args: argparse.Namespace) -> int:
                         armed_trigger_id = round_id
                         print(f"PADRÃO {pattern} DETECTADO | gatilho={round_id}", flush=True)
 
+            # Check before considering a new signal, including when a result
+            # and the next waiting tick arrive in the same poll.
+            if args.max_session_entries and session_entries >= args.max_session_entries and not pending:
+                return 0
             snapshot = watcher.snapshot()
             if armed_trigger_id:
                 discard_reason = signal_discard_reason(watcher, snapshot, armed_trigger_id)
@@ -363,9 +374,13 @@ def run(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bot automático por sequência para Blaze Crash")
     parser.add_argument("--live", action="store_true", help="envia apostas reais; sem isso usa paper")
-    parser.add_argument("--pattern", default=DEFAULT_PATTERN)
+    parser.add_argument("--preset", choices=tuple(PRESETS), default="original",
+                        help="original = MABBM/5x; baixas-media = BBBBM/1.50x experimental, sem vantagem demonstrada")
+    parser.add_argument("--pattern", default=None,
+                        help="sequência B/M/A; substitui o padrão do preset")
     parser.add_argument("--stake", default="0.10")
-    parser.add_argument("--auto-cashout-at", default="5.00")
+    parser.add_argument("--auto-cashout-at", default=None,
+                        help="retirada em x; substitui a retirada do preset")
     parser.add_argument("--daily-stop-loss", default="5.00")
     parser.add_argument("--daily-take-profit", default="5.00")
     parser.add_argument("--max-daily-entries", type=int, default=20)
@@ -381,8 +396,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="inclui a primeira tentativa; repete somente ConnectTimeout")
     parser.add_argument("--reconnect-seconds", type=float, default=3.0)
     parser.add_argument("--interval", type=float, default=0.05)
-    parser.add_argument("--socket-log-interval", type=float, default=10.0,
-                        help="mostra saúde do socket a cada N segundos (padrão: 10)")
+    parser.add_argument("--socket-log-interval", type=float, default=0.0,
+                        help="mostra saúde do socket a cada N segundos; padrão 0 = desligado")
     parser.add_argument("--verbose", action="store_true")
     return parser
 

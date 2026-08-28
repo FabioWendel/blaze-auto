@@ -13,11 +13,16 @@ dependencies = [
     "python-dotenv>=1.0,<2",
 ]
 
+[project.optional-dependencies]
+browser = ["playwright>=1.60,<2"]
+
 [project.scripts]
+blaze-crash-login = "blaze_auto.login_cli:main"
 blaze-crash = "blaze_auto.cli:main"
 blaze-crash-bet = "blaze_auto.bet_cli:main"
 blaze-crash-history = "blaze_auto.history_cli:main"
 blaze-crash-auto = "blaze_auto.auto_bot:main"
+blaze-double-auto = "blaze_auto.double_bot:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

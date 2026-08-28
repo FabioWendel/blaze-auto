@@ -207,9 +207,9 @@ class BlazeCrashWatcher:
             ws.send("3")
             return
 
-        for payload in extract_crash_ticks(message):
+        for payload in self._extract_ticks(message):
             snapshot = _snapshot_from_payload(payload)
-            completed = normalize_completed_round(payload)
+            completed = self._normalize_result(payload)
             with self._lock:
                 self._snapshot = snapshot
                 self._last_tick_monotonic = time.monotonic()
@@ -223,6 +223,9 @@ class BlazeCrashWatcher:
             with self._lock:
                 self._bets_snapshot = bets_snapshot
                 self._last_error = ""
+
+    _extract_ticks = staticmethod(extract_crash_ticks)
+    _normalize_result = staticmethod(normalize_completed_round)
 
 
 def _snapshot_from_payload(payload: dict[str, Any]) -> CrashSnapshot:

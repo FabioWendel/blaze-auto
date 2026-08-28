@@ -15,7 +15,10 @@ def run(args: argparse.Namespace) -> int:
         return 2
     path = Path(args.signals)
     matches = [row for row in read_signals(path) if row.get("entry_round_id") == args.round_id]
-    if len(matches) != 1 or matches[0].get("status") not in {"sending", "unknown", "error"}:
+    allowed = {"sending", "unknown", "error"}
+    if len(matches) == 1 and matches[0].get("game") == "double":
+        allowed |= {"entered", "paper_entered"}
+    if len(matches) != 1 or matches[0].get("status") not in allowed:
         print("ERRO: é necessário exatamente um registro incerto para essa rodada.")
         return 1
     row = matches[0]

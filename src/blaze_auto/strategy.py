@@ -68,20 +68,23 @@ def read_signals(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(stream))
 
 
-def append_signal(path: Path, row: dict[str, Any]) -> None:
+def append_signal(path: Path, row: dict[str, Any], *, fields: list[str] | None = None) -> None:
+    fields = fields or SIGNAL_FIELDS
     path.parent.mkdir(parents=True, exist_ok=True)
     needs_header = not path.exists() or path.stat().st_size == 0
     with path.open("a", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=SIGNAL_FIELDS)
+        writer = csv.DictWriter(stream, fieldnames=fields)
         if needs_header:
             writer.writeheader()
-        writer.writerow({field: row.get(field, "") for field in SIGNAL_FIELDS})
+        writer.writerow({field: row.get(field, "") for field in fields})
         stream.flush()
         os.fsync(stream.fileno())
 
 
 def update_signal(path: Path, signal_id: str, updates: dict[str, Any]) -> None:
     rows = read_signals(path)
+    # Preserve the ledger schema, including Double-specific columns.
+    fields = list(rows[0]) if rows else SIGNAL_FIELDS
     found = False
     for row in rows:
         if row.get("signal_id") == signal_id:
@@ -92,9 +95,9 @@ def update_signal(path: Path, signal_id: str, updates: dict[str, Any]) -> None:
         raise KeyError(f"sinal não encontrado: {signal_id}")
     temporary = path.with_suffix(path.suffix + ".tmp")
     with temporary.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=SIGNAL_FIELDS)
+        writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
-        writer.writerows([{field: row.get(field, "") for field in SIGNAL_FIELDS} for row in rows])
+        writer.writerows([{field: row.get(field, "") for field in fields} for row in rows])
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)

@@ -296,7 +296,7 @@ def test_idle_trigger_waits_for_fresh_next_round(tmp_path, monkeypatch, capsys, 
     assert calls == (["target"] if scenario == "normal" else [])
     assert Watcher.stopped
     output = capsys.readouterr().out
-    assert "SOCKET | CONECTADO" in output
+    assert "SOCKET |" not in output  # Periodic diagnostics are now opt-in.
     assert output.count("SINAL ARMADO") == 1
     if reason:
         assert f"motivo={reason}" in output

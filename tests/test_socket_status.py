@@ -127,7 +127,7 @@ def test_callbacks_are_registered_without_real_socket(monkeypatch, clock):
     assert watcher.connection_status().state == "PARADO"
 
 
-@pytest.mark.parametrize("interval", ["0", "-1", "nan", "inf"])
+@pytest.mark.parametrize("interval", ["-1", "nan", "inf"])
 def test_invalid_log_interval_fails_before_network(interval, monkeypatch):
     def no_network(*args):
         pytest.fail("should not connect")
@@ -137,4 +137,15 @@ def test_invalid_log_interval_fails_before_network(interval, monkeypatch):
 
 
 def test_default_status_interval():
-    assert auto_bot.build_parser().parse_args([]).socket_log_interval == 10
+    from blaze_auto import double_bot
+    assert auto_bot.build_parser().parse_args([]).socket_log_interval == 0
+    assert double_bot.build_parser().parse_args([]).socket_log_interval == 0
+    double_bot.validate(double_bot.build_parser().parse_args([]))
+
+
+def test_disabled_logger_does_not_print_or_query_watcher(capsys):
+    watcher = SimpleNamespace(connection_status=lambda: pytest.fail("disabled logger must not query watcher"))
+    for logger in (SocketStatusLogger(), SocketStatusLogger(0, "double.tick")):
+        logger.log_if_due(watcher)
+        logger.log_if_due(watcher)
+    assert capsys.readouterr().out == ""
